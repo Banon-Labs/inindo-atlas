@@ -299,6 +299,16 @@ SPAWN = (96, 3)  # player spawn (first walked half-tile); cold-ROM TODO: derive 
 ROUTE_COLORS = [(255, 60, 60), (255, 150, 40), (60, 220, 220), (220, 220, 50), (230, 60, 230),
                 (120, 200, 120), (140, 160, 255)]
 
+# Corner-slip routing is GATED OFF: the diagonal slip is direction/sub-tile-dependent (a
+# slip's validity depends on how you ENTER the cell, not just its neighbors), so a static
+# per-cell A* edge over-generates — it created false connectivity (routes weaving through /
+# into walls; a user-flagged segment had the same 8-neighbour config as a replay-confirmed
+# valid slip). Until the directional mechanic is reverse-engineered from the field-movement
+# routine, route with plain 4-connectivity (always valid). Flip to True only with a
+# direction-aware A* (state = cell + entry direction). The slip CHR/predicate/dual-count
+# code is kept for that re-enable.
+ENABLE_CORNER_SLIP = False
+
 
 def _wall_open_cells(rom):
     """Half-tiles whose TERRAIN is passable (attr >= WALK_THRESH), IGNORING objects and
@@ -478,7 +488,7 @@ def interactable_info(rom):
         for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1)):
             if (x + dx, y + dy) in walk:
                 goal = (x + dx, y + dy); break
-        path = _astar(walk, spawn, goal, diagonal=True, wall_open=wall_open) if goal else None
+        path = _astar(walk, spawn, goal, diagonal=ENABLE_CORNER_SLIP, wall_open=wall_open) if goal else None
         path_plain = _astar(walk, spawn, goal, diagonal=False) if goal else None  # 4-conn baseline
         open_line, reveal_line = chest_dialog(rom, item)
         dialog = [s for s in (open_line, reveal_line) if s]
@@ -673,7 +683,7 @@ def route_player_sprites(rom, spacing=12):
     routes = []
     sprites = {}
     for i, (goal, anchor) in enumerate(goals):
-        path = _astar(walk, spawn, goal, diagonal=True, wall_open=wall_open)
+        path = _astar(walk, spawn, goal, diagonal=ENABLE_CORNER_SLIP, wall_open=wall_open)
         if not path:
             continue
         hue = round(i * 360.0 / n)
@@ -742,7 +752,7 @@ def route_overlay(rom):
     routes = []
     wall_open = _wall_open_cells(rom)
     for i, (goal, anchor) in enumerate(_poi_goals(rom, walk)):
-        path = _astar(walk, spawn, goal, diagonal=True, wall_open=wall_open)
+        path = _astar(walk, spawn, goal, diagonal=ENABLE_CORNER_SLIP, wall_open=wall_open)
         if not path:
             continue
         col = ROUTE_COLORS[i % len(ROUTE_COLORS)]
