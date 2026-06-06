@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Inindo Atlas — generate from your ROM</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2016%2016'%3E%3Crect%20width='16'%20height='16'%20fill='%23806040'/%3E%3Ccircle%20cx='8'%20cy='8'%20r='3'%20fill='%233ce63c'/%3E%3C/svg%3E">
+<meta name="description" content="Generate Inindo (Way of the Ninja) maps in your browser from your own ROM — terrain, walkability, and A* routes. The ROM never leaves your machine.">
+<meta name="color-scheme" content="dark">
+<meta property="og:title" content="Inindo Atlas">
+<meta property="og:description" content="Upload your Inindo ROM; maps are reconstructed entirely in your browser.">
+
+<style>
+ body{font-family:system-ui,sans-serif;background:#151515;color:#e6e6e6;margin:0;padding:28px;line-height:1.55}
+ h1{font-size:23px;margin:0 0 4px} .sub{color:#9a9a9a;font-size:13px;max-width:720px}
+ .drop{margin:18px 0;padding:22px;border:2px dashed #444;border-radius:10px;background:#1c1c1c;max-width:720px}
+ .drop.busy{border-color:#5a8}
+ input[type=file]{color:#ccc}
+ button{background:#2a2a2a;color:#e6e6e6;border:1px solid #444;border-radius:6px;padding:6px 12px;margin-right:8px;cursor:pointer}
+ button[aria-pressed=true]{background:#2d4636;border-color:#5a8}
+ #status{font-size:13px;color:#9ad;min-height:20px;margin:8px 0}
+ canvas{image-rendering:pixelated;border:1px solid #3a3a3a;background:#000;max-width:100%;height:auto;margin-top:10px}
+ .priv{color:#7fd97f;font-size:12px} code{color:#e0b46a}
+ .note{font-size:12px;color:#c95;max-width:720px;margin-top:8px}
+</style></head><body>
+<h1>Inindo Atlas</h1>
+<div class="sub">Upload your <i>Inindo — Way of the Ninja</i> ROM and the atlas is generated <b>in your browser</b> — maps reconstructed straight from the ROM (terrain, tile graphics, walkability). <span class="priv">The ROM never leaves your machine; nothing is uploaded to any server.</span></div>
+
+<div class="drop" id="drop">
+  <input type="file" id="file" accept=".sfc,.smc,.bin">
+  <div id="status">Loading the in-browser Python runtime…</div>
+</div>
+
+<div id="view" style="display:none">
+  <button id="bStruct" aria-pressed="true">Map (1:1 render)</button>
+  <button id="bWalk" aria-pressed="false">Walkability</button>
+  <button id="bRoute" aria-pressed="false">A* routes</button>
+  <label style="margin-left:10px;font-size:13px;cursor:pointer"><input type="checkbox" id="cSprites" checked> Objects + Sprites</label>
+  <label style="margin-left:10px;font-size:13px;cursor:pointer"><input type="checkbox" id="cMarkers"> Markers</label>
+  <span class="sub" style="font-size:12px;margin-left:6px">(<b>Objects</b> = real in-game OBJ graphics · <b>Markers</b> = analytical POIs)</span>
+  <div id="mapname" class="sub" style="margin-top:6px"></div>
+  <canvas id="cv"></canvas>
+  <div id="objinfo" style="display:none;margin-top:8px;max-width:720px;background:#1e1e1e;border:1px solid #3a3a3a;border-left:3px solid #5a8;border-radius:6px;padding:10px 14px;font-size:13px"></div>
+  <div id="hint" class="sub" style="display:none;margin-top:6px"><b>A* routes</b> are drawn as the player character — a trail of the ninja facing the way it walks, <b>hue-cycled per route</b> so overlapping paths stay distinct; the <span style="color:#3ce63c">green square</span> is the spawn / warp start. <b>Objects + Sprites</b> (topmost): the real in-game objects decoded from the ROM — searchable shrines (click for contents/dialog) and the braziers that block movement. <b>Markers</b> (analytical overlay): <span style="color:#ff7070">red squares</span> = searchable objects, <span style="color:#ffd24a">yellow diamonds</span> = floor-tile cutscene triggers. Layer order: map → route → objects.</div>
+  <div class="note">First slice: the Password cave, structural cold-ROM render + walkability + A* routes to interactable objects. Floor-decoration autotiling and the other maps are layered on next.</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js"></script>
+<script>
+let pyodide, romBytes=null, lastMode='struct';
+const $ = s=>document.querySelector(s);
+function status(t){ $('#status').textContent = t; }
+
+async function boot(){
+  pyodide = await loadPyodide();
+  const src = await (await fetch('atlas_pipeline.py')).text();
+  pyodide.runPython(src);               // defines the pipeline functions (no imports)
+  status('Ready — choose your Inindo ROM (.sfc).');
+}
+boot();
+
+$('#file').addEventListener('change', async (e)=>{
+  const f = e.target.files[0]; if(!f) return;
+  $('#drop').classList.add('busy');
+  status('Reading ROM…');
+  romBytes = new Uint8Array(await f.arrayBuffer());
+  await generate('struct');
+  $('#view').style.display='block';
+  $('#drop').classList.remove('busy');
+});
+
+async function generate(mode){
+  if(!romBytes) return;
+  lastMode = mode;
+  const label = {walk:'Computing walkability…', route:'Computing A* routes…'}[mode] || 'Rendering map from ROM…';
+  status(label);
+  $('#bStruct').setAttribute('aria-pressed', mode==='struct');
+  $('#bWalk').setAttribute('aria-pressed', mode==='walk');
+  $('#bRoute').setAttribute('aria-pressed', mode==='route');
+  // hand the ROM bytes to Python and run the pipeline
+  pyodide.globals.set('rom_js', romBytes);
+  // route mode now uses the structural map as its base; the route is drawn as the
+  // player character (below) instead of baked-in coloured dots.
+  const fn = {walk:'walkable_overlay'}[mode] || 'render_cave_structural';
+  pyodide.runPython(`
+import builtins
+_rom = builtins.bytes(rom_js.to_py())
+_pw,_ph,_rgba = ${fn}(_rom)
+`);
+  const pw = pyodide.globals.get('_pw');
+  const ph = pyodide.globals.get('_ph');
+  const rgba = pyodide.globals.get('_rgba').toJs();   // Uint8Array RGBA
+  const cv = $('#cv'); cv.width=pw; cv.height=ph;
+  const ctx = cv.getContext('2d');
+  ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba), pw, ph), 0, 0);
+  cv.style.width = Math.min(pw*1, 1000)+'px';
+  $('#mapname').textContent = `Password cave · ${pw}×${ph} · rendered from ROM`;
+  status(mode==='walk' ? 'Walkability shown (red = blocked).' : 'Map rendered.');
+  // A* routes drawn as the player character (hue-cycled per route) — between map & objects
+  window.routeData = null;
+  if(mode==='route'){
+    pyodide.runPython(`import json as _j\n_rt=_j.dumps(route_player_sprites(_rom))`);
+    window.routeData = JSON.parse(pyodide.globals.get('_rt'));
+    buildRouteCanvases(window.routeData);
+    drawRoutePlayers(ctx, window.routeData);
+  }
+  // Markers layer (analytical POIs) — checkbox
+  if($('#cMarkers').checked){
+    pyodide.runPython(`import json as _j\n_info=_j.dumps(interactable_info(_rom))\n_trig=_j.dumps(movement_triggers(_rom))`);
+    window.objs = JSON.parse(pyodide.globals.get('_info'));
+    window.triggers = JSON.parse(pyodide.globals.get('_trig'));
+    drawMarkers(ctx);
+  } else { window.objs = null; window.triggers = null; }
+  // Objects + Sprites layer (real in-game OBJ graphics) — TOPMOST — checkbox
+  if($('#cSprites').checked){
+    pyodide.runPython(`import json as _j\n_spr=_j.dumps(object_sprites(_rom))`);
+    window.spriteData = JSON.parse(pyodide.globals.get('_spr'));
+    buildSpriteCanvases(window.spriteData);
+    drawSprites(ctx, window.spriteData);
+  } else { window.spriteData = null; }
+  const anyLayer = $('#cMarkers').checked || $('#cSprites').checked;
+  $('#hint').style.display = anyLayer ? 'block' : 'none';
+  if(!anyLayer) $('#objinfo').style.display='none';
+}
+
+// real in-game OBJECT sprites: 16x16 OBJ-CHR graphics decoded from the ROM, drawn at
+// each object's half-tile cell. This is the TOPMOST layer (over map + A* route).
+function buildSpriteCanvases(sd){
+  window.spriteCanvas = {};
+  for(const ch in sd.sprites){
+    const c = document.createElement('canvas'); c.width = sd.w; c.height = sd.h;
+    c.getContext('2d').putImageData(
+      new ImageData(new Uint8ClampedArray(sd.sprites[ch]), sd.w, sd.h), 0, 0);
+    window.spriteCanvas[ch] = c;
+  }
+}
+function drawSprites(ctx, sd){
+  ctx.imageSmoothingEnabled = false;
+  for(const o of sd.objects){
+    const c = window.spriteCanvas[o.char];
+    if(c) ctx.drawImage(c, o.px, o.py);
+  }
+}
+// A* routes as the player character: a hue-cycled trail of the ninja facing the way it
+// travels. The start/spawn is a green square (warp marker); markers stay squares too.
+function buildRouteCanvases(rd){
+  window.routeCanvas = {};
+  for(const key in rd.sprites){
+    const c = document.createElement('canvas'); c.width = rd.w; c.height = rd.h;
+    c.getContext('2d').putImageData(
+      new ImageData(new Uint8ClampedArray(rd.sprites[key]), rd.w, rd.h), 0, 0);
+    window.routeCanvas[key] = c;
+  }
+}
+function drawRoutePlayers(ctx, rd){
+  ctx.imageSmoothingEnabled = false;
+  for(const r of rd.routes){
+    for(const p of r.points){
+      const c = window.routeCanvas[p.key];
+      if(c) ctx.drawImage(c, p.px, p.py);
+    }
+  }
+  // spawn / warp start: green square
+  const [sx, sy] = rd.spawn_px;
+  ctx.fillStyle = '#3ce63c'; ctx.strokeStyle = '#0a3'; ctx.lineWidth = 1;
+  ctx.fillRect(sx-4, sy-4, 8, 8); ctx.strokeRect(sx-4, sy-4, 8, 8);
+}
+function showSpritePanel(panel, o){
+  panel.style.display='block';
+  const charHex = '0x'+o.char.toString(16).toUpperCase();
+  if(o.kind==='searchable'){
+    panel.style.borderLeftColor='#5a8';
+    const dlg=(o.dialog&&o.dialog.length)?o.dialog.map(s=>`“${s}”`).join(' &rarr; '):(o.search||'');
+    panel.innerHTML =
+      `<b>Searchable object — ${o.item||('0x'+(o.id||0).toString(16))}</b> `+
+      `<span style="color:#9a9a9a">(the figure you search; A* target)</span><br>`+
+      `Search &rarr; ${dlg}<br>`+
+      `<span style="color:#9a9a9a">in-game object (BG char ${charHex}) · cell (${o.cell_x},${o.cell_y}) · `+
+      `route from spawn: ${o.route_steps==null?'unreachable':o.route_steps+' steps'+(o.route_steps_plain!=null&&o.route_steps_plain!=o.route_steps?' ('+o.route_steps_plain+' without corner-slip)':'')}</span>`;
+  } else {
+    panel.style.borderLeftColor='#c95';
+    panel.innerHTML =
+      `<b>Blocking object</b> <span style="color:#9a9a9a">(a figure that blocks movement)</span><br>`+
+      `<span style="color:#9a9a9a">in-game object (BG char ${charHex}) · cell (${o.cell_x},${o.cell_y}) · `+
+      `selector action 0x${o.action.toString(16).toUpperCase()}</span>`;
+  }
+}
+
+// overlay distinct markers: chests (red squares = A* targets) vs floor triggers
+// (yellow diamonds = stepped on along the way, NOT targets)
+function drawMarkers(ctx){
+  for(const o of (window.objs||[])){
+    ctx.fillStyle='#ff5050'; ctx.strokeStyle='#fff'; ctx.lineWidth=1;
+    ctx.fillRect(o.px-3,o.py-3,6,6); ctx.strokeRect(o.px-3,o.py-3,6,6);
+  }
+  for(const t of (window.triggers||[])){
+    if(t.px==null) continue;
+    ctx.save(); ctx.translate(t.px,t.py); ctx.rotate(Math.PI/4);
+    ctx.fillStyle='#ffd24a'; ctx.strokeStyle='#000'; ctx.lineWidth=1;
+    ctx.fillRect(-4,-4,8,8); ctx.strokeRect(-4,-4,8,8); ctx.restore();
+  }
+}
+
+// click a marker (route mode): red square = chest POI, yellow diamond = floor trigger
+$('#cv').addEventListener('click', (e)=>{
+  if(!window.objs && !window.triggers && !window.spriteData) return;
+  const cv = $('#cv'), r = cv.getBoundingClientRect();
+  const x = (e.clientX - r.left) * (cv.width / r.width);
+  const y = (e.clientY - r.top) * (cv.height / r.height);
+  // real object sprites are topmost: bounding-box hit takes priority
+  if(window.spriteData){
+    const ow=window.spriteData.w, oh=window.spriteData.h;
+    for(const o of window.spriteData.objects){
+      if(x>=o.px && x<o.px+ow && y>=o.py && y<o.py+oh){ showSpritePanel($('#objinfo'), o); return; }
+    }
+  }
+  let best=null, bd=1e9, kind=null;
+  for(const o of (window.objs||[])){ const d=(o.px-x)**2+(o.py-y)**2; if(d<bd){bd=d; best=o; kind='chest';} }
+  for(const t of (window.triggers||[])){ if(t.px==null) continue; const d=(t.px-x)**2+(t.py-y)**2; if(d<bd){bd=d; best=t; kind='trigger';} }
+  const panel = $('#objinfo');
+  if(!(best && bd <= 14*14)){ panel.style.display='none'; return; }
+  panel.style.display='block';
+  if(kind==='chest'){
+    panel.style.borderLeftColor='#5a8';
+    const dlg = (best.dialog&&best.dialog.length)
+      ? best.dialog.map(s=>`“${s}”`).join(' &rarr; ') : best.search;
+    panel.innerHTML =
+      `<b>Treasure chest — ${best.item||('0x'+best.id.toString(16))}</b> `+
+      `<span style="color:#9a9a9a">(A* target)</span><br>`+
+      `Search &rarr; ${dlg}<br>`+
+      `<span style="color:#9a9a9a">cell (${best.cell_x},${best.cell_y}) · item id <code>0x${best.id.toString(16).toUpperCase()}</code>`+
+      ` · opened-flag <code>0x${best.flags.toString(16).toUpperCase()}</code> · `+
+      `route from spawn: ${best.route_steps==null?'unreachable':best.route_steps+' steps'+(best.route_steps_plain!=null&&best.route_steps_plain!=best.route_steps?' ('+best.route_steps_plain+' without corner-slip)':'')}</span>`;
+  } else {
+    panel.style.borderLeftColor='#ffd24a';
+    panel.innerHTML =
+      `<b>Floor cutscene trigger</b> <span style="color:#9a9a9a">(stepped on along the way — NOT a search target)</span><br>`+
+      `Step onto this tile &rarr; “${best.text}”<br>`+
+      `<span style="color:#9a9a9a">cell (${best.cell_x},${best.cell_y}) · ${best.note}</span>`;
+  }
+});
+
+$('#bStruct').onclick = ()=>generate('struct');
+$('#bWalk').onclick   = ()=>generate('walk');
+$('#bRoute').onclick  = ()=>generate('route');
+$('#cSprites').onchange = ()=>generate(lastMode);   // toggle the topmost real-Objects layer
+$('#cMarkers').onchange = ()=>generate(lastMode);   // toggle the analytical Markers layer
+</script>
+</body></html>
