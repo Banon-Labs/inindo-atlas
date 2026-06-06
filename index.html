@@ -30,6 +30,7 @@
 </div>
 
 <div id="view" style="display:none">
+  <label style="font-size:13px;margin-right:8px">Map <select id="mapSel"></select></label>
   <button id="bStruct" aria-pressed="true">Map (1:1 render)</button>
   <button id="bWalk" aria-pressed="false">Walkability</button>
   <button id="bRoute" aria-pressed="false">A* routes</button>
@@ -45,7 +46,7 @@
 
 <script src="https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js"></script>
 <script>
-let pyodide, romBytes=null, lastMode='struct';
+let pyodide, romBytes=null, lastMode='struct', curMap='cave', mapMeta={};
 const $ = s=>document.querySelector(s);
 function status(t){ $('#status').textContent = t; }
 
@@ -53,15 +54,30 @@ async function boot(){
   pyodide = await loadPyodide();
   const src = await (await fetch('atlas_pipeline.py')).text();
   pyodide.runPython(src);               // defines the pipeline functions (no imports)
+  // populate the map selector from the manifest (ROM-independent)
+  pyodide.runPython(`import json as _j\n_ml=_j.dumps(map_list())`);
+  const maps = JSON.parse(pyodide.globals.get('_ml'));
+  const sel = $('#mapSel'); sel.innerHTML='';
+  for(const m of maps){ mapMeta[m.key]=m; const o=document.createElement('option'); o.value=m.key; o.textContent=m.name; sel.appendChild(o); }
   status('Ready — choose your Inindo ROM (.sfc).');
 }
 boot();
+
+// cave is the only map with the rich overlays (objects/walkability/routes) so far.
+function applyMapCapabilities(){
+  const rich = curMap==='cave';
+  for(const id of ['#bWalk','#bRoute','#cSprites','#cMarkers']){
+    const el=$(id); const ctl = el.tagName==='BUTTON'?el:el.closest('label');
+    ctl.style.display = rich ? '' : 'none';
+  }
+}
 
 $('#file').addEventListener('change', async (e)=>{
   const f = e.target.files[0]; if(!f) return;
   $('#drop').classList.add('busy');
   status('Reading ROM…');
   romBytes = new Uint8Array(await f.arrayBuffer());
+  curMap = $('#mapSel').value || 'cave'; applyMapCapabilities();
   await generate('struct');
   $('#view').style.display='block';
   $('#drop').classList.remove('busy');
@@ -77,13 +93,13 @@ async function generate(mode){
   $('#bRoute').setAttribute('aria-pressed', mode==='route');
   // hand the ROM bytes to Python and run the pipeline
   pyodide.globals.set('rom_js', romBytes);
-  // route mode now uses the structural map as its base; the route is drawn as the
-  // player character (below) instead of baked-in coloured dots.
-  const fn = {walk:'walkable_overlay'}[mode] || 'render_cave_structural';
+  pyodide.globals.set('map_key', curMap);
+  // every map renders terrain via the manifest; walkability overlay is cave-only so far.
+  const useWalk = (mode==='walk' && curMap==='cave');
   pyodide.runPython(`
 import builtins
 _rom = builtins.bytes(rom_js.to_py())
-_pw,_ph,_rgba = ${fn}(_rom)
+_pw,_ph,_rgba = ${useWalk ? 'walkable_overlay(_rom)' : 'render_map_struct(_rom, map_key)'}
 `);
   const pw = pyodide.globals.get('_pw');
   const ph = pyodide.globals.get('_ph');
@@ -92,25 +108,25 @@ _pw,_ph,_rgba = ${fn}(_rom)
   const ctx = cv.getContext('2d');
   ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba), pw, ph), 0, 0);
   cv.style.width = Math.min(pw*1, 1000)+'px';
-  $('#mapname').textContent = `Password cave · ${pw}×${ph} · rendered from ROM`;
+  $('#mapname').textContent = `${(mapMeta[curMap]||{}).name||curMap} · ${pw}×${ph} · rendered from ROM`;
   status(mode==='walk' ? 'Walkability shown (red = blocked).' : 'Map rendered.');
   // A* routes drawn as the player character (hue-cycled per route) — between map & objects
   window.routeData = null;
-  if(mode==='route'){
+  if(mode==='route' && curMap==='cave'){
     pyodide.runPython(`import json as _j\n_rt=_j.dumps(route_player_sprites(_rom))`);
     window.routeData = JSON.parse(pyodide.globals.get('_rt'));
     buildRouteCanvases(window.routeData);
     drawRoutePlayers(ctx, window.routeData);
   }
-  // Markers layer (analytical POIs) — checkbox
-  if($('#cMarkers').checked){
+  // Markers layer (analytical POIs) — checkbox (cave-only so far)
+  if($('#cMarkers').checked && curMap==='cave'){
     pyodide.runPython(`import json as _j\n_info=_j.dumps(interactable_info(_rom))\n_trig=_j.dumps(movement_triggers(_rom))`);
     window.objs = JSON.parse(pyodide.globals.get('_info'));
     window.triggers = JSON.parse(pyodide.globals.get('_trig'));
     drawMarkers(ctx);
   } else { window.objs = null; window.triggers = null; }
-  // Objects + Sprites layer (real in-game OBJ graphics) — TOPMOST — checkbox
-  if($('#cSprites').checked){
+  // Objects + Sprites layer (real in-game OBJ graphics) — TOPMOST — checkbox (cave-only so far)
+  if($('#cSprites').checked && curMap==='cave'){
     pyodide.runPython(`import json as _j\n_spr=_j.dumps(object_sprites(_rom))`);
     window.spriteData = JSON.parse(pyodide.globals.get('_spr'));
     buildSpriteCanvases(window.spriteData);
@@ -243,5 +259,6 @@ $('#bWalk').onclick   = ()=>generate('walk');
 $('#bRoute').onclick  = ()=>generate('route');
 $('#cSprites').onchange = ()=>generate(lastMode);   // toggle the topmost real-Objects layer
 $('#cMarkers').onchange = ()=>generate(lastMode);   // toggle the analytical Markers layer
+$('#mapSel').onchange = ()=>{ curMap = $('#mapSel').value; applyMapCapabilities(); generate('struct'); };
 </script>
 </body></html>

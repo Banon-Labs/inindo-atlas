@@ -226,6 +226,58 @@ def render_cave_high_fidelity(rom):
     return pw, ph, bytes(rgba)
 
 
+# ---------- manifest-driven multi-map render ----------
+# Inindo has NO static map directory (docs/reverse-engineering/map-generalization-negative-result.md),
+# so each area's ROM resource offsets are derived once from a runtime capture (savestate) via
+# work/derive_map_manifest.py and recorded here. The pipeline then renders any listed map straight
+# from the uploaded ROM. New towns/dungeons are added by capturing them and appending an entry.
+MANIFEST = {
+    "cave":      {"name": "Password Cave", "grid": 0x06829B, "dims": (50, 21),
+                  "lut": 0x068055, "chr": 0x09CD80, "chr_first": 0x20, "pal": 0x0159E0},
+    "iga-field": {"name": "Iga Village",   "grid": 0x0DD4B2, "dims": (26, 27),
+                  "lut": 0x030612, "chr": 0x099F00, "chr_first": 0x20, "pal": 0x0159A0},
+}
+
+
+def _map_palette(rom, pal_off):
+    return [_bgr555(rom[pal_off + c * 2], rom[pal_off + c * 2 + 1]) for c in range(0x10)]
+
+
+def render_map_struct(rom, key):
+    """Generalized terrain render for any MANIFEST area (cave-equivalent for 'cave').
+    Returns (w, h, rgba) at 2x scale (HALF_PX per half-tile)."""
+    m = MANIFEST[key]; w, h = m["dims"]
+    grid = decode_grid(rom, m["grid"], w, h)
+    pal = _map_palette(rom, m["pal"])
+    pw, ph = w * 16, h * 16
+    rgba = bytearray(pw * ph * 4); cache = {}
+    for r in range(h):
+        for c in range(w):
+            tid = grid[r][c]
+            for q in range(4):
+                chr_byte = rom[m["lut"] + tid * 4 + q]
+                slot = _bg_word(chr_byte) & 0x3FF
+                tile = cache.get(slot)
+                if tile is None:
+                    ro = m["chr"] + (slot - m["chr_first"]) * 32
+                    tile = (_decode_4bpp(rom, ro) if 0 <= ro and ro + 32 <= len(rom)
+                            else [[0] * 8 for _ in range(8)])
+                    cache[slot] = tile
+                ox, oy = c * 16 + (q & 1) * 8, r * 16 + ((q >> 1) & 1) * 8
+                for yy in range(8):
+                    for xx in range(8):
+                        cr, cg, cb = pal[tile[yy][xx]]
+                        i = ((oy + yy) * pw + (ox + xx)) * 4
+                        rgba[i] = cr; rgba[i + 1] = cg; rgba[i + 2] = cb; rgba[i + 3] = 255
+    return _upscale2x(pw, ph, bytes(rgba))
+
+
+def map_list():
+    """Selector metadata for the UI: which maps the manifest can render from this ROM."""
+    return [{"key": k, "name": v["name"], "w": v["dims"][0], "h": v["dims"][1]}
+            for k, v in MANIFEST.items()]
+
+
 # ---------- walkability ----------
 def _attr(rom, grid, hx, hy):
     tid = grid[hy // 2][hx // 2]
