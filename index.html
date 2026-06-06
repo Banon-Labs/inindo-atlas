@@ -107,8 +107,14 @@ _pw,_ph,_rgba = ${useWalk ? 'walkable_overlay(_rom)' : 'render_map_struct(_rom, 
   const cv = $('#cv'); cv.width=pw; cv.height=ph;
   const ctx = cv.getContext('2d');
   ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba), pw, ph), 0, 0);
-  cv.style.width = Math.min(pw*1, 1000)+'px';
-  $('#mapname').textContent = `${(mapMeta[curMap]||{}).name||curMap} · ${pw}×${ph} · rendered from ROM`;
+  // SNES 256-mode pixel aspect: the PPU renders square pixels but the display is ~8:7
+  // wider (to fill 4:3). The canvas data stays square (overlays align in pixel coords);
+  // we stretch only the *display* width so on-screen proportions match the real game.
+  const PAR = 8/7;
+  let dw = pw*PAR, dh = ph;
+  if(dw > 1000){ const k = 1000/dw; dw*=k; dh*=k; }
+  cv.style.width = dw+'px'; cv.style.height = dh+'px'; cv.style.imageRendering = 'pixelated';
+  $('#mapname').textContent = `${(mapMeta[curMap]||{}).name||curMap} · ${pw}×${ph} · rendered from ROM (8:7 display)`;
   status(mode==='walk' ? 'Walkability shown (red = blocked).' : 'Map rendered.');
   // A* routes drawn as the player character (hue-cycled per route) — between map & objects
   window.routeData = null;
