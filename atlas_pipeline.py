@@ -116,58 +116,72 @@ def _bg_word(chr_idx):
     return 0x0820 + (((chr_idx << 2) & 0xFFE0) + ((chr_idx & 7) << 1))
 
 
-def _chr_tile(rom, chr_slot, cache):
-    """chr_slot is a synthetic-VRAM slot index; map back to ROM CHR and decode."""
-    t = cache.get(chr_slot)
-    if t is None:
-        ro = CHR_ROM + (chr_slot - CHR_FIRST) * 32
-        t = _decode_4bpp(rom, ro) if 0 <= ro and ro + 32 <= len(rom) else [[0] * 8 for _ in range(8)]
-        cache[chr_slot] = t
-    return t
-
-
-# The cave is rendered at 2x native (each half-tile = 16 px, each metatile = 32 px) so that
-# the field objects — placed at half-tile coords — sit at their true in-game spacing
-# (one tile apart, matching real screenshots). HALF_PX is the pixels-per-half-tile used by
-# every cell->pixel conversion below; the base terrain render is upscaled 2x to match.
+# ---------- native-scale terrain geometry (Mode-2 16x16-character BG) ----------
+# The field/cave BG is an SNES Mode-2 *16x16-character* layer. Each metatile is a 4-byte
+# LUT row, and EACH of those four bytes addresses a 16x16 *character* — four distinct 8x8
+# CHR tiles, NOT one. The char's four 8x8 sub-tiles sit at chr_slot(byte) + {0,1,16,17}
+# (TL,TR,BL,BR) in a CHR sheet that is 16 8x8 tiles wide. So a metatile is a 2x2 of 16x16
+# chars = 2x2 of (2x2 of 8x8 tiles) = 32 px on screen with native 1px detail — NOT a
+# 16px metatile (the old 1-tile-per-byte render dropped 3 of every 4 sub-tiles and then
+# 2x-upscaled, doubling pixels instead of drawing the real chars). Verified pixel-exact
+# against the live VRAM/CGRAM dump / native framebuffer (iga-field building).
+#
+# HALF_PX is pixels-per-half-tile. A cell (metatile) is 2 half-tiles wide = 32 px, so
+# HALF_PX = 16. Every cell/half-tile -> pixel conversion below uses HALF_PX, so terrain
+# and the object/route/trigger overlays stay aligned at this native 32px-metatile scale.
 HALF_PX = 16
+CHR_SHEET_TILES = 16  # CHR sheet is 16 8x8 tiles wide; +16 slots => next char row
+# Four 8x8 CHR sub-tile slots (relative to a 16x16 char's base slot): TL, TR, BL, BR.
+CHAR_SUBTILE_OFFSETS = (0, 1, CHR_SHEET_TILES, CHR_SHEET_TILES + 1)
+METATILE_PX = 32  # native on-screen metatile size (2x2 of 16x16 chars)
 
 
-def _upscale2x(pw, ph, rgba):
-    pw2, ph2 = pw * 2, ph * 2
-    out = bytearray(pw2 * ph2 * 4)
-    for y in range(ph2):
-        srow = (y // 2) * pw
-        for x in range(pw2):
-            s = (srow + (x // 2)) * 4
-            d = (y * pw2 + x) * 4
-            out[d:d + 4] = rgba[s:s + 4]
-    return pw2, ph2, bytes(out)
+def _draw_char(rom, rgba, pw, pal, pal_base, cache, cx, cy, chr_byte, chr_base, chr_first):
+    """Draw one 16x16 character (its four 8x8 sub-tiles) with top-left at pixel (cx, cy).
+    The four sub-tiles are chr_slot(byte) + CHAR_SUBTILE_OFFSETS (TL,TR,BL,BR)."""
+    base = _bg_word(chr_byte) & 0x3FF
+    for sub, off in enumerate(CHAR_SUBTILE_OFFSETS):
+        slot = base + off
+        tile = cache.get(slot)
+        if tile is None:
+            ro = chr_base + (slot - chr_first) * 32
+            tile = (_decode_4bpp(rom, ro) if 0 <= ro and ro + 32 <= len(rom)
+                    else [[0] * 8 for _ in range(8)])
+            cache[slot] = tile
+        ox = cx + (sub & 1) * 8
+        oy = cy + (sub >> 1) * 8
+        for yy in range(8):
+            row = tile[yy]
+            base_i = ((oy + yy) * pw + ox) * 4
+            for xx in range(8):
+                cr, cg, cb = pal[pal_base + row[xx]]
+                i = base_i + xx * 4
+                rgba[i] = cr; rgba[i + 1] = cg; rgba[i + 2] = cb; rgba[i + 3] = 255
 
 
-# ---------- structural map render (per-quadrant 16x16 metatile, upscaled 2x) ----------
-def render_cave_structural(rom):
-    w, h = CAVE_DIMS
-    grid = decode_grid(rom, CAVE_GRID, w, h)
-    pal = _palette(rom)
-    pw, ph = w * 16, h * 16
+def _render_terrain(rom, w, h, grid_off, lut_off, pal, pal_base, chr_base, chr_first):
+    """Native 32px-metatile terrain render. Each metatile = a 2x2 of 16x16 chars; each of
+    the 4 LUT bytes is one char (its own 2x2 of 8x8 sub-tiles). Returns (pw, ph, rgba)."""
+    grid = decode_grid(rom, grid_off, w, h)
+    pw, ph = w * METATILE_PX, h * METATILE_PX
     rgba = bytearray(pw * ph * 4)
     cache = {}
     for r in range(h):
         for c in range(w):
             tid = grid[r][c]
-            for q in range(4):
-                chr_byte = rom[LUT + tid * 4 + q]
-                slot = _bg_word(chr_byte) & 0x3FF
-                tile = _chr_tile(rom, slot, cache)
-                ox = c * 16 + (q & 1) * 8
-                oy = r * 16 + ((q >> 1) & 1) * 8
-                for yy in range(8):
-                    for xx in range(8):
-                        cr, cg, cb = pal[0x20 + tile[yy][xx]]
-                        i = ((oy + yy) * pw + (ox + xx)) * 4
-                        rgba[i] = cr; rgba[i + 1] = cg; rgba[i + 2] = cb; rgba[i + 3] = 255
-    return _upscale2x(pw, ph, bytes(rgba))
+            for char in range(4):  # 4 LUT bytes -> 2x2 of 16x16 chars
+                chr_byte = rom[lut_off + tid * 4 + char]
+                cx = c * METATILE_PX + (char & 1) * 16
+                cy = r * METATILE_PX + (char >> 1) * 16
+                _draw_char(rom, rgba, pw, pal, pal_base, cache, cx, cy, chr_byte, chr_base, chr_first)
+    return pw, ph, bytes(rgba)
+
+
+# ---------- structural map render (native 32px metatile, full 16x16 chars) ----------
+def render_cave_structural(rom):
+    pal = _palette(rom)
+    w, h = CAVE_DIMS
+    return _render_terrain(rom, w, h, CAVE_GRID, LUT, pal, 0x20, CHR_ROM, CHR_FIRST)
 
 
 # ---------- high-fidelity floor render (full CHR page) ----------
@@ -182,48 +196,15 @@ def render_cave_structural(rom):
 CHR_HIGH_MAX = 0x200          # render chr slots up to char 0x1FF (covers the 0x100 page)
 
 
-def _chr_tile_full(rom, chr_slot, cache):
-    """Like _chr_tile but valid across the whole linear cave CHR page, including the
-    char>=0x100 region (e.g. char 0x100 = chr index 0x38 -> ROM 0x09E980). Out-of-ROM
-    slots decode to a blank tile."""
-    t = cache.get(chr_slot)
-    if t is None:
-        ro = CHR_ROM + (chr_slot - CHR_FIRST) * 32
-        t = (_decode_4bpp(rom, ro) if 0 <= ro and ro + 32 <= len(rom)
-             else [[0] * 8 for _ in range(8)])
-        cache[chr_slot] = t
-    return t
-
-
 def render_cave_high_fidelity(rom):
-    """Pixel-faithful cave render: identical to render_cave_structural but sources
-    CHR over the full linear page so any metatile chr index (incl. chr 0x38 -> char
-    0x100 decorated floor at ROM 0x09E980) resolves to its real cold-ROM pixels.
-    For the password-cave grid this is pixel-identical to render_cave_structural
-    (that grid never references the 0x100 page); the function generalises the floor
-    CHR so maps whose metatile table uses the 0x100 page render real floor, not garbage.
-    Returns (w, h, rgba_bytes)."""
-    w, h = CAVE_DIMS
-    grid = decode_grid(rom, CAVE_GRID, w, h)
+    """Pixel-faithful cave render: same native 32px-metatile render as render_cave_structural.
+    _render_terrain already sources CHR over the full linear page (no upper bound on the slot),
+    so any metatile chr index — incl. chr 0x38 -> char 0x100 decorated floor at ROM 0x09E980 —
+    resolves to its real cold-ROM pixels. For the password-cave grid this is pixel-identical to
+    render_cave_structural (that grid never references the 0x100 page). Returns (w, h, rgba)."""
     pal = _palette(rom)
-    pw, ph = w * 16, h * 16
-    rgba = bytearray(pw * ph * 4)
-    cache = {}
-    for r in range(h):
-        for c in range(w):
-            tid = grid[r][c]
-            for q in range(4):
-                chr_byte = rom[LUT + tid * 4 + q]
-                slot = _bg_word(chr_byte) & 0x3FF
-                tile = _chr_tile_full(rom, slot, cache)
-                ox = c * 16 + (q & 1) * 8
-                oy = r * 16 + ((q >> 1) & 1) * 8
-                for yy in range(8):
-                    for xx in range(8):
-                        cr, cg, cb = pal[0x20 + tile[yy][xx]]
-                        i = ((oy + yy) * pw + (ox + xx)) * 4
-                        rgba[i] = cr; rgba[i + 1] = cg; rgba[i + 2] = cb; rgba[i + 3] = 255
-    return pw, ph, bytes(rgba)
+    w, h = CAVE_DIMS
+    return _render_terrain(rom, w, h, CAVE_GRID, LUT, pal, 0x20, CHR_ROM, CHR_FIRST)
 
 
 # ---------- manifest-driven multi-map render ----------
@@ -245,31 +226,11 @@ def _map_palette(rom, pal_off):
 
 def render_map_struct(rom, key):
     """Generalized terrain render for any MANIFEST area (cave-equivalent for 'cave').
-    Returns (w, h, rgba) at 2x scale (HALF_PX per half-tile)."""
+    Returns (w, h, rgba) at NATIVE scale: 32 px/metatile (each metatile = a 2x2 of full
+    16x16 chars). _map_palette returns 16 BGR555 colours, so the palette base index is 0."""
     m = MANIFEST[key]; w, h = m["dims"]
-    grid = decode_grid(rom, m["grid"], w, h)
     pal = _map_palette(rom, m["pal"])
-    pw, ph = w * 16, h * 16
-    rgba = bytearray(pw * ph * 4); cache = {}
-    for r in range(h):
-        for c in range(w):
-            tid = grid[r][c]
-            for q in range(4):
-                chr_byte = rom[m["lut"] + tid * 4 + q]
-                slot = _bg_word(chr_byte) & 0x3FF
-                tile = cache.get(slot)
-                if tile is None:
-                    ro = m["chr"] + (slot - m["chr_first"]) * 32
-                    tile = (_decode_4bpp(rom, ro) if 0 <= ro and ro + 32 <= len(rom)
-                            else [[0] * 8 for _ in range(8)])
-                    cache[slot] = tile
-                ox, oy = c * 16 + (q & 1) * 8, r * 16 + ((q >> 1) & 1) * 8
-                for yy in range(8):
-                    for xx in range(8):
-                        cr, cg, cb = pal[tile[yy][xx]]
-                        i = ((oy + yy) * pw + (ox + xx)) * 4
-                        rgba[i] = cr; rgba[i + 1] = cg; rgba[i + 2] = cb; rgba[i + 3] = 255
-    return _upscale2x(pw, ph, bytes(rgba))
+    return _render_terrain(rom, w, h, m["grid"], m["lut"], pal, 0, m["chr"], m["chr_first"])
 
 
 def map_list():
