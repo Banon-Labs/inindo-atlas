@@ -86,7 +86,7 @@ def decode_grid(rom, off, w, h):
 
 
 # ---------- SNES 4bpp + palette ----------
-def _bgr555(lo, hi):
+def _bgr555(lo: int, hi: int) -> tuple[int, int, int]:
     v = lo | (hi << 8)
     return ((v & 31) * 255 // 31, ((v >> 5) & 31) * 255 // 31, ((v >> 10) & 31) * 255 // 31)
 
@@ -208,16 +208,145 @@ def render_cave_high_fidelity(rom):
 
 
 # ---------- manifest-driven multi-map render ----------
-# Inindo has NO static map directory (docs/reverse-engineering/map-generalization-negative-result.md),
-# so each area's ROM resource offsets are derived once from a runtime capture (savestate) via
-# work/derive_map_manifest.py and recorded here. The pipeline then renders any listed map straight
-# from the uploaded ROM. New towns/dungeons are added by capturing them and appending an entry.
+# Cave remains a capture-context anchor. Town grids are a ROM-backed bank-$1B chain
+# (work/re-tables/grid-loader-trace.md): 32 blocks starting at header 0x0DB4DC, where
+# each block is [W][H][2 metadata bytes] + RLE grid. Dropdown labels must not pretend
+# a map-name binding exists unless the name comes from a ROM text table with a known
+# binding. Unknown blocks stay neutral; capture-only labels are marked as such.
+LABEL_ROM_DERIVED = "rom-derived"
+LABEL_CAPTURE_CONTEXT = "capture-context"
+LABEL_NEEDS_ROM = "needs-rom"
+LABEL_UNKNOWN = "unknown"
+
+CAVE_KEY = "cave"
+LEGACY_IGA_KEY = "iga-field"
+TOWN_KEY_PREFIX = "town-"
+TOWN_BLOCK_COUNT = 32
+TOWN_CHAIN_HEADER = 0x0DB4DC
+TOWN_HEADER_SIZE = 4
+TOWN_LUT = 0x030612
+TOWN_CHR = 0x099F00
+TOWN_CHR_FIRST = 0x20
+TOWN_PAL = 0x0159A0
+IGA_TOWN_BLOCK_INDEX = 18
+IGA_SPECIAL_PLACE_INDEX = 4
+IGA_SPECIAL_PLACE_NAME_FILE = 0x028B4C
+ISE_CAPTURE_BLOCK_INDEX = 0
+ISE_PROVINCE_INDEX = 16
+ISE_PROVINCE_NAME_FILE = 0x0147B4
+SPECIAL_PLACE_NAME_BASE = 0x028B2A
+LAND_NAME_TABLE = 0x014704
+LAND_NAME_STRIDE = 11
+LAND_NAME_TEXT_OFFSET = 0
+LAND_NAME_TEXT_LEN = 10
+PRINTABLE_ASCII_MIN = 0x20
+PRINTABLE_ASCII_MAX = 0x7F
+
+TOWN_BLOCK_DIMS = (
+    (34, 38), (40, 31), (22, 20), (36, 26), (24, 30), (24, 24), (24, 21), (26, 21),
+    (34, 26), (24, 20), (32, 28), (18, 19), (24, 20), (27, 22), (30, 25), (25, 21),
+    (27, 21), (24, 20), (26, 27), (28, 24), (24, 20), (24, 20), (31, 30), (31, 32),
+    (20, 40), (25, 20), (20, 20), (26, 20), (27, 30), (25, 25), (25, 20), (20, 20),
+)
+
 MANIFEST = {
-    "cave":      {"name": "Password Cave", "grid": 0x06829B, "dims": (50, 21),
-                  "lut": 0x068055, "chr": 0x09CD80, "chr_first": 0x20, "pal": 0x0159E0},
-    "iga-field": {"name": "Iga Village",   "grid": 0x0DD4B2, "dims": (26, 27),
-                  "lut": 0x030612, "chr": 0x099F00, "chr_first": 0x20, "pal": 0x0159A0},
+    CAVE_KEY: {"name": "Password cave", "grid": 0x06829B, "dims": (50, 21),
+               "lut": 0x068055, "chr": 0x09CD80, "chr_first": 0x20, "pal": 0x0159E0,
+               "label_provenance": LABEL_CAPTURE_CONTEXT,
+               "label_detail": "capture/task anchor; no ROM place-name binding pinned yet"},
 }
+
+
+def _is_printable_ascii(raw):
+    return bool(raw) and all(PRINTABLE_ASCII_MIN <= b < PRINTABLE_ASCII_MAX for b in raw)
+
+
+def _decode_ascii(raw):
+    s = raw.split(b"\x00")[0]
+    return s.decode("latin1") if _is_printable_ascii(s) else None
+
+
+def _special_place_name(rom, index):
+    p = SPECIAL_PLACE_NAME_BASE
+    for _ in range(index):
+        end = rom.find(b"\x00", p)
+        if end < 0:
+            return None
+        p = end + 1
+    end = rom.find(b"\x00", p)
+    if end < 0:
+        return None
+    return _decode_ascii(rom[p:end])
+
+
+def _province_name(rom, index):
+    start = LAND_NAME_TABLE + index * LAND_NAME_STRIDE + LAND_NAME_TEXT_OFFSET
+    return _decode_ascii(rom[start:start + LAND_NAME_TEXT_LEN])
+
+
+def _rle_grid_end(rom, off, total):
+    written = 0
+    p = off
+    while written < total:
+        ctrl = rom[p]
+        if ctrl & 0x80:
+            written += 1
+            p += 1
+        else:
+            written += rom[p + 1]
+            p += 2
+    return p
+
+
+def _town_block_from_rom(rom, index):
+    hdr = TOWN_CHAIN_HEADER
+    for i in range(TOWN_BLOCK_COUNT):
+        w, h = rom[hdr], rom[hdr + 1]
+        grid = hdr + TOWN_HEADER_SIZE
+        end = _rle_grid_end(rom, grid, w * h)
+        if i == index:
+            return {"grid": grid, "dims": (w, h), "lut": TOWN_LUT, "chr": TOWN_CHR,
+                    "chr_first": TOWN_CHR_FIRST, "pal": TOWN_PAL}
+        hdr = end
+    raise KeyError(index)
+
+
+def _town_key(index):
+    return f"{TOWN_KEY_PREFIX}{index:02d}"
+
+
+def _town_label(index, rom=None):
+    fallback = f"Town block {index:02d}"
+    if index == IGA_TOWN_BLOCK_INDEX:
+        if rom is None:
+            return fallback, LABEL_NEEDS_ROM, "special-place name row #4 is read after ROM upload"
+        name = _special_place_name(rom, IGA_SPECIAL_PLACE_INDEX)
+        if name:
+            return name, LABEL_ROM_DERIVED, f"special-place name row #4 at file 0x{IGA_SPECIAL_PLACE_NAME_FILE:06X}"
+        return fallback, LABEL_UNKNOWN, "special-place name row #4 could not be decoded"
+    if index == ISE_CAPTURE_BLOCK_INDEX:
+        if rom is None:
+            return fallback, LABEL_CAPTURE_CONTEXT, "Ise capture context; block-to-name binding unproven"
+        context = _province_name(rom, ISE_PROVINCE_INDEX)
+        if context:
+            return (f"{fallback} (capture: {context})", LABEL_CAPTURE_CONTEXT,
+                    f"capture context uses province name row #16 at file 0x{ISE_PROVINCE_NAME_FILE:06X}; town-block binding unproven")
+    return fallback, LABEL_UNKNOWN, "no ROM-backed map-name binding pinned yet"
+
+
+def _map_entry(key, name, dims, provenance, detail):
+    return {"key": key, "name": name, "w": dims[0], "h": dims[1],
+            "label_provenance": provenance, "label_detail": detail}
+
+
+def _map_manifest_entry(rom, key):
+    if key == LEGACY_IGA_KEY:
+        key = _town_key(IGA_TOWN_BLOCK_INDEX)
+    if key in MANIFEST:
+        return MANIFEST[key]
+    if key.startswith(TOWN_KEY_PREFIX):
+        return _town_block_from_rom(rom, int(key[len(TOWN_KEY_PREFIX):]))
+    raise KeyError(key)
 
 
 def _map_palette(rom, pal_off):
@@ -225,18 +354,24 @@ def _map_palette(rom, pal_off):
 
 
 def render_map_struct(rom, key):
-    """Generalized terrain render for any MANIFEST area (cave-equivalent for 'cave').
+    """Generalized terrain render for any manifest/keyed area.
     Returns (w, h, rgba) at NATIVE scale: 32 px/metatile (each metatile = a 2x2 of full
     16x16 chars). _map_palette returns 16 BGR555 colours, so the palette base index is 0."""
-    m = MANIFEST[key]; w, h = m["dims"]
+    m = _map_manifest_entry(rom, key)
+    w, h = m["dims"]
     pal = _map_palette(rom, m["pal"])
     return _render_terrain(rom, w, h, m["grid"], m["lut"], pal, 0, m["chr"], m["chr_first"])
 
 
-def map_list():
-    """Selector metadata for the UI: which maps the manifest can render from this ROM."""
-    return [{"key": k, "name": v["name"], "w": v["dims"][0], "h": v["dims"][1]}
-            for k, v in MANIFEST.items()]
+def map_list(rom=None):
+    """Selector metadata for the UI, with display-label provenance for every entry."""
+    out = [_map_entry(CAVE_KEY, MANIFEST[CAVE_KEY]["name"], MANIFEST[CAVE_KEY]["dims"],
+                      MANIFEST[CAVE_KEY]["label_provenance"], MANIFEST[CAVE_KEY]["label_detail"])]
+    for index, fallback_dims in enumerate(TOWN_BLOCK_DIMS):
+        dims = _town_block_from_rom(rom, index)["dims"] if rom is not None else fallback_dims
+        name, provenance, detail = _town_label(index, rom)
+        out.append(_map_entry(_town_key(index), name, dims, provenance, detail))
+    return out
 
 
 # ---------- walkability ----------
@@ -621,11 +756,11 @@ def object_sprites(rom):
     return {"w": sz, "h": sz, "sprites": {str(k): v for k, v in sprites.items()}, "objects": objects}
 
 
-def _player_palette(rom):
+def _player_palette(rom: bytes) -> list[tuple[int, int, int]]:
     return [_bgr555(rom[PLAYER_PAL_ROM + c * 2], rom[PLAYER_PAL_ROM + c * 2 + 1]) for c in range(16)]
 
 
-def _hue_shift(r, g, b, deg):
+def _hue_shift(r: int, g: int, b: int, deg: float) -> tuple[int, int, int]:
     """Rotate an RGB colour's hue by `deg` degrees (keeps saturation/value). No trig."""
     mx = max(r, g, b); mn = min(r, g, b); d = mx - mn
     if d == 0:
@@ -649,10 +784,13 @@ def _hue_shift(r, g, b, deg):
     return (round((rp + m) * 255), round((gp + m) * 255), round((bp + m) * 255))
 
 
-def _player_rgba(rom, face, hue, hflip):
+def _player_rgba(rom: bytes, face: str, hue: float, hflip: bool) -> list[int]:
     """16x16 RGBA for the player facing `face`, palette hue-shifted by `hue` degrees.
     Name-table layout TL,TL+1,TL+0x10,TL+0x11. OBJ index 0 -> transparent."""
-    pal = [(_hue_shift(*c, hue) if i else c) for i, c in enumerate(_player_palette(rom))]
+    pal = []
+    for i, colour in enumerate(_player_palette(rom)):
+        r, g, b = colour
+        pal.append(_hue_shift(r, g, b, hue) if i else colour)
     tl = PLAYER_FACE[face]
     out = bytearray(16 * 16 * 4)
     for ch, ox, oy in ((tl, 0, 0), (tl + 1, 8, 0), (tl + 0x10, 0, 8), (tl + 0x11, 8, 8)):

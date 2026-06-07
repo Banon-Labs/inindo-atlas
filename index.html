@@ -17,7 +17,9 @@
  button{background:#2a2a2a;color:#e6e6e6;border:1px solid #444;border-radius:6px;padding:6px 12px;margin-right:8px;cursor:pointer}
  button[aria-pressed=true]{background:#2d4636;border-color:#5a8}
  #status{font-size:13px;color:#9ad;min-height:20px;margin:8px 0}
- canvas{image-rendering:pixelated;border:1px solid #3a3a3a;background:#000;max-width:100%;height:auto;margin-top:10px}
+ #cv{image-rendering:pixelated;border:1px solid #3a3a3a;background:#000;margin-top:10px;cursor:grab;touch-action:none;display:block}
+ #zbar{margin-top:6px;font-size:12px;color:#9a9a9a}
+ #zbar button{padding:2px 10px;margin-right:6px}
  .priv{color:#7fd97f;font-size:12px} code{color:#e0b46a}
  .note{font-size:12px;color:#c95;max-width:720px;margin-top:8px}
 </style></head><body>
@@ -39,27 +41,51 @@
   <span class="sub" style="font-size:12px;margin-left:6px">(<b>Objects</b> = real in-game OBJ graphics · <b>Markers</b> = analytical POIs)</span>
   <div id="mapname" class="sub" style="margin-top:6px"></div>
   <canvas id="cv"></canvas>
+  <div id="zbar">drag to pan · scroll to zoom · <button id="zfit">Fit</button><button id="z1">100%</button><button id="z2">200%</button><span id="zlbl"></span></div>
   <div id="objinfo" style="display:none;margin-top:8px;max-width:720px;background:#1e1e1e;border:1px solid #3a3a3a;border-left:3px solid #5a8;border-radius:6px;padding:10px 14px;font-size:13px"></div>
   <div id="hint" class="sub" style="display:none;margin-top:6px"><b>A* routes</b> are drawn as the player character — a trail of the ninja facing the way it walks, <b>hue-cycled per route</b> so overlapping paths stay distinct; the <span style="color:#3ce63c">green square</span> is the spawn / warp start. <b>Objects + Sprites</b> (topmost): the real in-game objects decoded from the ROM — searchable shrines (click for contents/dialog) and the braziers that block movement. <b>Markers</b> (analytical overlay): <span style="color:#ff7070">red squares</span> = searchable objects, <span style="color:#ffd24a">yellow diamonds</span> = floor-tile cutscene triggers. Layer order: map → route → objects.</div>
-  <div class="note">First slice: the Password cave, structural cold-ROM render + walkability + A* routes to interactable objects. Floor-decoration autotiling and the other maps are layered on next.</div>
+  <div class="note">Town-grid maps are listed from the ROM-backed bank-$1B chain. Names are shown only when their binding is ROM-derived; otherwise the dropdown keeps neutral block labels or capture-context notes. Rich walkability, A* routes, objects, and markers remain Password-cave only for now.</div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js"></script>
 <script>
 let pyodide, romBytes=null, lastMode='struct', curMap='cave', mapMeta={};
 const $ = s=>document.querySelector(s);
+const esc = v=>String(v).replace(/[&<>\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]));
 function status(t){ $('#status').textContent = t; }
+function refreshMapSelector(maps, preserve=true){
+  const previous = preserve ? ($('#mapSel').value || curMap) : '';
+  const sel = $('#mapSel'); sel.innerHTML=''; mapMeta={};
+  for(const m of maps){
+    mapMeta[m.key]=m;
+    const o=document.createElement('option'); o.value=m.key;
+    o.textContent=m.name + (m.label_provenance ? ` · ${m.label_provenance}` : '');
+    o.title=m.label_detail || '';
+    sel.appendChild(o);
+  }
+  if(previous && mapMeta[previous]) sel.value=previous;
+  curMap = sel.value || 'cave';
+}
 
 async function boot(){
-  pyodide = await loadPyodide();
-  const src = await (await fetch('atlas_pipeline.py')).text();
-  pyodide.runPython(src);               // defines the pipeline functions (no imports)
-  // populate the map selector from the manifest (ROM-independent)
-  pyodide.runPython(`import json as _j\n_ml=_j.dumps(map_list())`);
-  const maps = JSON.parse(pyodide.globals.get('_ml'));
-  const sel = $('#mapSel'); sel.innerHTML='';
-  for(const m of maps){ mapMeta[m.key]=m; const o=document.createElement('option'); o.value=m.key; o.textContent=m.name; sel.appendChild(o); }
-  status('Ready — choose your Inindo ROM (.sfc).');
+  try{
+    status('Downloading Python runtime (~12 MB, first load)…');
+    console.log('[atlas] loadPyodide start');
+    pyodide = await loadPyodide();
+    console.log('[atlas] pyodide ready');
+    status('Loading map pipeline…');
+    const src = await (await fetch('atlas_pipeline.py', {cache:'no-store'})).text();
+    pyodide.runPython(src);               // defines the pipeline functions (no imports)
+    // populate the map selector from the manifest (ROM-independent)
+    pyodide.runPython(`import json as _j\n_ml=_j.dumps(map_list())`);
+    const maps = JSON.parse(pyodide.globals.get('_ml'));
+    refreshMapSelector(maps, false);
+    console.log('[atlas] ready, maps:', maps.map(m=>m.key).join(', '));
+    status('Ready — choose your Inindo ROM (.sfc).');
+  }catch(err){
+    console.error('[atlas] boot failed:', err);
+    status('Startup failed: ' + (err && err.message ? err.message : err) + ' — see console.');
+  }
 }
 boot();
 
@@ -77,6 +103,13 @@ $('#file').addEventListener('change', async (e)=>{
   $('#drop').classList.add('busy');
   status('Reading ROM…');
   romBytes = new Uint8Array(await f.arrayBuffer());
+  pyodide.globals.set('rom_js', romBytes);
+  pyodide.runPython(`
+import builtins, json as _j
+_rom_for_maps = builtins.bytes(rom_js.to_py())
+_ml = _j.dumps(map_list(_rom_for_maps))
+`);
+  refreshMapSelector(JSON.parse(pyodide.globals.get('_ml')), true);
   curMap = $('#mapSel').value || 'cave'; applyMapCapabilities();
   await generate('struct');
   $('#view').style.display='block';
@@ -85,6 +118,7 @@ $('#file').addEventListener('change', async (e)=>{
 
 async function generate(mode){
   if(!romBytes) return;
+  if(!pyodide){ status('Python runtime still loading — re-select the ROM in a moment.'); return; }
   lastMode = mode;
   const label = {walk:'Computing walkability…', route:'Computing A* routes…'}[mode] || 'Rendering map from ROM…';
   status(label);
@@ -104,17 +138,15 @@ _pw,_ph,_rgba = ${useWalk ? 'walkable_overlay(_rom)' : 'render_map_struct(_rom, 
   const pw = pyodide.globals.get('_pw');
   const ph = pyodide.globals.get('_ph');
   const rgba = pyodide.globals.get('_rgba').toJs();   // Uint8Array RGBA
-  const cv = $('#cv'); cv.width=pw; cv.height=ph;
-  const ctx = cv.getContext('2d');
+  // Composite terrain + overlays onto an OFFSCREEN canvas at NATIVE resolution, then
+  // show it through a pan/zoom viewport. No CSS downscaling — the map is its true
+  // pixel size; zoom in the viewer instead of stretching the canvas.
+  const mc = document.createElement('canvas'); mc.width=pw; mc.height=ph;
+  const ctx = mc.getContext('2d'); ctx.imageSmoothingEnabled=false;
   ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba), pw, ph), 0, 0);
-  // SNES 256-mode pixel aspect: the PPU renders square pixels but the display is ~8:7
-  // wider (to fill 4:3). The canvas data stays square (overlays align in pixel coords);
-  // we stretch only the *display* width so on-screen proportions match the real game.
-  const PAR = 8/7;
-  let dw = pw*PAR, dh = ph;
-  if(dw > 1000){ const k = 1000/dw; dw*=k; dh*=k; }
-  cv.style.width = dw+'px'; cv.style.height = dh+'px'; cv.style.imageRendering = 'pixelated';
-  $('#mapname').textContent = `${(mapMeta[curMap]||{}).name||curMap} · ${pw}×${ph} · rendered from ROM (8:7 display)`;
+  window.mapCanvas = mc; window.mapW=pw; window.mapH=ph;
+  const meta = mapMeta[curMap] || {};
+  $('#mapname').innerHTML = `${esc(meta.name||curMap)} · ${pw}×${ph}px native<br><span style="font-size:12px;color:#9a9a9a">${esc(meta.label_provenance||'unknown')} — ${esc(meta.label_detail||'')}</span>`;
   status(mode==='walk' ? 'Walkability shown (red = blocked).' : 'Map rendered.');
   // A* routes drawn as the player character (hue-cycled per route) — between map & objects
   window.routeData = null;
@@ -141,7 +173,64 @@ _pw,_ph,_rgba = ${useWalk ? 'walkable_overlay(_rom)' : 'render_map_struct(_rom, 
   const anyLayer = $('#cMarkers').checked || $('#cSprites').checked;
   $('#hint').style.display = anyLayer ? 'block' : 'none';
   if(!anyLayer) $('#objinfo').style.display='none';
+  setupViewport(); drawViewport();
 }
+
+// ---- pan/zoom viewport: native-resolution offscreen map shown in a fixed window ----
+const VW = 920, VH = 620;
+let view = { zoom: 1, ox: 0, oy: 0 };
+function clampView(){
+  const mc = window.mapCanvas; if(!mc) return;
+  const sw = VW/view.zoom, sh = VH/view.zoom;
+  view.ox = Math.max(0, Math.min(view.ox, Math.max(0, mc.width - sw)));
+  view.oy = Math.max(0, Math.min(view.oy, Math.max(0, mc.height - sh)));
+}
+function drawViewport(){
+  const mc = window.mapCanvas; if(!mc) return;
+  const cv = $('#cv'); cv.width = VW; cv.height = VH;
+  const ctx = cv.getContext('2d'); ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = '#0a0a0a'; ctx.fillRect(0,0,VW,VH);
+  const sw = VW/view.zoom, sh = VH/view.zoom;
+  ctx.drawImage(mc, view.ox, view.oy, sw, sh, 0, 0, sw*view.zoom, sh*view.zoom);
+  const zl = $('#zlbl'); if(zl) zl.textContent = ` ${mc.width}×${mc.height}px · ${Math.round(view.zoom*100)}%`;
+}
+function setupViewport(){
+  const mc = window.mapCanvas; if(!mc) return;
+  const fit = Math.min(VW/mc.width, VH/mc.height);
+  view.zoom = fit >= 1 ? Math.max(1, Math.floor(fit)) : fit;   // whole map visible; integer zoom if it fits
+  view.ox = 0; view.oy = 0; clampView();
+}
+function screenToMap(e){
+  const cv = $('#cv'), r = cv.getBoundingClientRect();
+  const sx = (e.clientX - r.left) * (cv.width / r.width);
+  const sy = (e.clientY - r.top) * (cv.height / r.height);
+  return { x: view.ox + sx/view.zoom, y: view.oy + sy/view.zoom, sx, sy };
+}
+function zoomBy(f, sx, sy){
+  const cv = $('#cv');
+  if(sx==null){ sx = cv.width/2; sy = cv.height/2; }
+  const mx = view.ox + sx/view.zoom, my = view.oy + sy/view.zoom;
+  view.zoom = Math.max(0.25, Math.min(16, view.zoom * f));
+  view.ox = mx - sx/view.zoom; view.oy = my - sy/view.zoom;
+  clampView(); drawViewport();
+}
+(function initViewportEvents(){
+  const cv = $('#cv'); let drag = null;
+  cv.addEventListener('wheel', (e)=>{ if(!window.mapCanvas) return; e.preventDefault();
+    const p = screenToMap(e); zoomBy(e.deltaY < 0 ? 1.25 : 0.8, p.sx, p.sy); }, {passive:false});
+  cv.addEventListener('pointerdown', (e)=>{ if(!window.mapCanvas) return;
+    drag = {x:e.clientX, y:e.clientY, ox:view.ox, oy:view.oy, moved:false};
+    cv.setPointerCapture(e.pointerId); cv.style.cursor='grabbing'; });
+  cv.addEventListener('pointermove', (e)=>{ if(!drag) return;
+    if(Math.abs(e.clientX-drag.x)+Math.abs(e.clientY-drag.y) > 3) drag.moved=true;
+    view.ox = drag.ox - (e.clientX-drag.x)/view.zoom;
+    view.oy = drag.oy - (e.clientY-drag.y)/view.zoom; clampView(); drawViewport(); });
+  cv.addEventListener('pointerup', (e)=>{ const wasDrag = drag && drag.moved; drag=null; cv.style.cursor='grab';
+    if(!wasDrag) handleMapClick(e); });
+  $('#zfit').addEventListener('click', ()=>{ setupViewport(); drawViewport(); });
+  $('#z1').addEventListener('click', ()=>{ view.zoom=1; clampView(); drawViewport(); });
+  $('#z2').addEventListener('click', ()=>{ view.zoom=2; clampView(); drawViewport(); });
+})();
 
 // real in-game OBJECT sprites: 16x16 OBJ-CHR graphics decoded from the ROM, drawn at
 // each object's half-tile cell. This is the TOPMOST layer (over map + A* route).
@@ -221,12 +310,11 @@ function drawMarkers(ctx){
   }
 }
 
-// click a marker (route mode): red square = chest POI, yellow diamond = floor trigger
-$('#cv').addEventListener('click', (e)=>{
+// click a marker (route mode): red square = chest POI, yellow diamond = floor trigger.
+// coords are mapped through the pan/zoom viewport back to native map pixels.
+function handleMapClick(e){
   if(!window.objs && !window.triggers && !window.spriteData) return;
-  const cv = $('#cv'), r = cv.getBoundingClientRect();
-  const x = (e.clientX - r.left) * (cv.width / r.width);
-  const y = (e.clientY - r.top) * (cv.height / r.height);
+  const p = screenToMap(e); const x = p.x, y = p.y;
   // real object sprites are topmost: bounding-box hit takes priority
   if(window.spriteData){
     const ow=window.spriteData.w, oh=window.spriteData.h;
@@ -258,7 +346,7 @@ $('#cv').addEventListener('click', (e)=>{
       `Step onto this tile &rarr; “${best.text}”<br>`+
       `<span style="color:#9a9a9a">cell (${best.cell_x},${best.cell_y}) · ${best.note}</span>`;
   }
-});
+}
 
 $('#bStruct').onclick = ()=>generate('struct');
 $('#bWalk').onclick   = ()=>generate('walk');
