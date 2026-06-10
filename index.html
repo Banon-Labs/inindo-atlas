@@ -22,9 +22,20 @@
  #zbar button{padding:2px 10px;margin-right:6px}
  .priv{color:#7fd97f;font-size:12px} code{color:#e0b46a}
  .note{font-size:12px;color:#c95;max-width:720px;margin-top:8px}
+ a{color:#8cf}
+ .sitenav{display:flex;flex-wrap:wrap;gap:.4rem;margin:0 0 14px;font-size:13px}
+ .sitenav a{color:#8cf;text-decoration:none;padding:4px 12px;border:1px solid #3a3a3a;border-radius:999px;background:#1c1c1c}
+ .sitenav a:hover{border-color:#8cf;background:#20283a}
+ .sitenav a[aria-current=page]{color:#ffd479;border-color:#a86;background:#262030}
 </style></head><body>
+<nav class="sitenav">
+  <a href="https://banon-labs.github.io/inindo-bingo/index.html">🎰 play bingo</a>
+  <a href="https://banon-labs.github.io/inindo-bingo/map.html">🗾 casino map</a>
+  <a href="https://banon-labs.github.io/inindo-bingo/recruits.html">🥷 recruit finder</a>
+  <a href="index.html" aria-current="page">🗺️ map atlas</a>
+</nav>
 <h1>Inindo Atlas</h1>
-<div class="sub">Upload your <i>Inindo — Way of the Ninja</i> ROM and the atlas is generated <b>in your browser</b> — maps reconstructed straight from the ROM (terrain, tile graphics, walkability). <span class="priv">The ROM never leaves your machine; nothing is uploaded to any server.</span></div>
+<div class="sub">Upload your <i>Inindo — Way of the Ninja</i> ROM and the atlas is generated <b>in your browser</b> — maps reconstructed straight from the ROM (terrain, tile graphics, walkability). <span class="priv">The ROM never leaves your machine; nothing is uploaded to any server.</span> Part of the same reverse-engineering project as the <a href="https://banon-labs.github.io/inindo-bingo/index.html">rebuilt bingo minigame</a>, the <a href="https://banon-labs.github.io/inindo-bingo/map.html">casino map of Japan</a>, and the <a href="https://banon-labs.github.io/inindo-bingo/recruits.html">recruit finder</a> — those need no ROM at all.</div>
 
 <div class="drop" id="drop">
   <input type="file" id="file" accept=".sfc,.smc,.bin">
