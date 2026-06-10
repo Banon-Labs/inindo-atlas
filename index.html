@@ -9,32 +9,36 @@
 <meta property="og:description" content="Upload your Inindo ROM; maps are reconstructed entirely in your browser.">
 
 <style>
- body{font-family:system-ui,sans-serif;background:#151515;color:#e6e6e6;margin:0;padding:28px;line-height:1.55}
- h1{font-size:23px;margin:0 0 4px} .sub{color:#9a9a9a;font-size:13px;max-width:720px}
- .drop{margin:18px 0;padding:22px;border:2px dashed #444;border-radius:10px;background:#1c1c1c;max-width:720px}
+ body{font-family:system-ui,sans-serif;background:#101018;color:#e8e8f0;max-width:960px;margin:1.5rem auto;padding:0 1rem;line-height:1.55}
+ h1{font-size:1.1rem;color:#8cf;text-align:center;margin:0 0 4px}
+ .sub{text-align:center;color:#9aa;font-size:.85rem;max-width:720px;margin:0 auto}
+ .drop{margin:18px auto;padding:22px;border:2px dashed #445;border-radius:10px;background:#1c2230;max-width:720px;text-align:center}
  .drop.busy{border-color:#5a8}
  input[type=file]{color:#ccc}
- button{background:#2a2a2a;color:#e6e6e6;border:1px solid #444;border-radius:6px;padding:6px 12px;margin-right:8px;cursor:pointer}
+ button{background:#2c4a72;color:#e8e8f0;border:1px solid #58c;border-radius:6px;padding:6px 12px;margin-right:8px;cursor:pointer}
  button[aria-pressed=true]{background:#2d4636;border-color:#5a8}
  #status{font-size:13px;color:#9ad;min-height:20px;margin:8px 0}
- #cv{image-rendering:pixelated;border:1px solid #3a3a3a;background:#000;margin-top:10px;cursor:grab;touch-action:none;display:block}
- #zbar{margin-top:6px;font-size:12px;color:#9a9a9a}
+ #view{text-align:center}
+ #cv{image-rendering:pixelated;border:1px solid #445;background:#000;margin:10px auto 0;cursor:grab;touch-action:none;display:block;max-width:100%}
+ #zbar{margin-top:6px;font-size:12px;color:#9aa}
  #zbar button{padding:2px 10px;margin-right:6px}
  .priv{color:#7fd97f;font-size:12px} code{color:#e0b46a}
- .note{font-size:12px;color:#c95;max-width:720px;margin-top:8px}
+ .note{font-size:12px;color:#c95;max-width:720px;margin:8px auto 0;text-align:center}
+ #objinfo{text-align:left}
  a{color:#8cf}
- .sitenav{display:flex;flex-wrap:wrap;gap:.4rem;margin:0 0 14px;font-size:13px}
- .sitenav a{color:#8cf;text-decoration:none;padding:4px 12px;border:1px solid #3a3a3a;border-radius:999px;background:#1c1c1c}
- .sitenav a:hover{border-color:#8cf;background:#20283a}
+ .sitenav{display:flex;flex-wrap:wrap;justify-content:center;gap:.4rem;margin:.1rem 0 1rem;font-size:.85rem}
+ .sitenav a{color:#8cf;text-decoration:none;padding:.22rem .75rem;border:1px solid #345;border-radius:999px;background:#161c2c}
+ .sitenav a:hover{border-color:#8cf;background:#1c2840}
  .sitenav a[aria-current=page]{color:#ffd479;border-color:#a86;background:#262030}
+ footer{margin-top:2rem;padding-top:1rem;border-top:1px solid #334;color:#778;font-size:.76rem;line-height:1.5;text-align:center}
 </style></head><body>
+<h1>ININDO ATLAS — maps from your ROM, in your browser</h1>
 <nav class="sitenav">
   <a href="https://banon-labs.github.io/inindo-bingo/index.html">🎰 play bingo</a>
   <a href="https://banon-labs.github.io/inindo-bingo/map.html">🗾 casino map</a>
   <a href="https://banon-labs.github.io/inindo-bingo/recruits.html">🥷 recruit finder</a>
   <a href="index.html" aria-current="page">🗺️ map atlas</a>
 </nav>
-<h1>Inindo Atlas</h1>
 <div class="sub">Upload your <i>Inindo — Way of the Ninja</i> ROM and the atlas is generated <b>in your browser</b> — maps reconstructed straight from the ROM (terrain, tile graphics, walkability). <span class="priv">The ROM never leaves your machine; nothing is uploaded to any server.</span> Part of the same reverse-engineering project as the <a href="https://banon-labs.github.io/inindo-bingo/index.html">rebuilt bingo minigame</a>, the <a href="https://banon-labs.github.io/inindo-bingo/map.html">casino map of Japan</a>, and the <a href="https://banon-labs.github.io/inindo-bingo/recruits.html">recruit finder</a> — those need no ROM at all.</div>
 
 <div class="drop" id="drop">
@@ -57,6 +61,14 @@
   <div id="hint" class="sub" style="display:none;margin-top:6px"><b>A* routes</b> are drawn as the player character — a trail of the ninja facing the way it walks, <b>hue-cycled per route</b> so overlapping paths stay distinct; the <span style="color:#3ce63c">green square</span> is the spawn / warp start. <b>Objects + Sprites</b> (topmost): the real in-game objects decoded from the ROM — searchable shrines (click for contents/dialog) and the braziers that block movement. <b>Markers</b> (analytical overlay): <span style="color:#ff7070">red squares</span> = searchable objects, <span style="color:#ffd24a">yellow diamonds</span> = floor-tile cutscene triggers. Layer order: map → route → objects.</div>
   <div class="note">Town-grid maps are listed from the ROM-backed bank-$1B chain. Names are shown only when their binding is ROM-derived; otherwise the dropdown keeps neutral block labels or capture-context notes. Rich walkability, A* routes, objects, and markers remain Password-cave only for now.</div>
 </div>
+
+<footer>
+  Made for educational and research purposes only. Independent, unaffiliated
+  reverse-engineering tooling; this site ships no ROM, graphics, audio, or
+  original text — maps are generated locally from your own copy.
+  <em>Inindo: Way of the Ninja</em> and all original game content are
+  © <a href="https://en.wikipedia.org/wiki/Koei">Koei</a> (now Koei Tecmo Games).
+</footer>
 
 <script src="https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js"></script>
 <script>
